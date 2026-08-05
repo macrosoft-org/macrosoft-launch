@@ -111,7 +111,9 @@ extends JPanel {
 
     protected void fillDefaultValues() {
         String javaPath = this.editor.getProfile().getJavaPath();
-        if (javaPath != null) {
+        // Garante que javaPath é diferente de null, e que aponta para um java válido
+        // Caso contrário, usa o java do sistema (que foi bem sucedido em abrir o launcher, então deve funcionar)
+        if (javaPath != null && new File(javaPath).isFile()) {
             this.javaPathCustom.setSelected(true);
             this.javaPathField.setText(javaPath);
         } else {
