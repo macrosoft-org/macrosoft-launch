@@ -10,6 +10,10 @@ import java.util.Map;
 
 public class JavaRuntimeManagerDialog extends JDialog {
 
+    public interface InstallationListener {
+        void onInstalled(JavaRuntimeManager.InstalledRuntime runtime) throws Exception;
+    }
+
     // ── Cores (espelham MacrosoftModpackBrowser) ───────────────────────────
     private static final Color BG          = new Color(22, 13, 28);
     private static final Color PANEL_BG    = new Color(35, 22, 45);
@@ -26,6 +30,7 @@ public class JavaRuntimeManagerDialog extends JDialog {
     // ── Estado ─────────────────────────────────────────────────────────────
     private final Path macrosoftBaseDir;
     private final List<JavaRuntimeManager.JavaRuntimeOption> platformOptions;
+    private final InstallationListener installationListener;
 
     private final DefaultListModel<String> listModel    = new DefaultListModel<>();
     private final JList<String>            runtimeList  = new JList<>(listModel);
@@ -45,9 +50,17 @@ public class JavaRuntimeManagerDialog extends JDialog {
     public JavaRuntimeManagerDialog(JFrame owner,
                                     Path macrosoftBaseDir,
                                     List<JavaRuntimeManager.JavaRuntimeOption> allApiOptions) {
+        this(owner, macrosoftBaseDir, allApiOptions, null);
+    }
+
+    public JavaRuntimeManagerDialog(JFrame owner,
+                                    Path macrosoftBaseDir,
+                                    List<JavaRuntimeManager.JavaRuntimeOption> allApiOptions,
+                                    InstallationListener installationListener) {
         super(owner, "Gerenciar Java (Macrosoft)", true);
         this.macrosoftBaseDir = macrosoftBaseDir;
         this.platformOptions  = JavaRuntimeManager.filterForCurrentPlatform(allApiOptions);
+        this.installationListener = installationListener;
 
         // ── Painel raiz ────────────────────────────────────────────────────
         JPanel root = new JPanel(new BorderLayout(8, 10));
@@ -221,8 +234,20 @@ public class JavaRuntimeManagerDialog extends JDialog {
                     installProgress.setValue(100);
                     installProgress.setString("100%");
                     progressLabel.setText("✅  Instalação concluída");
+                    String configuredMessage = "";
+                    if (installationListener != null) {
+                        try {
+                            installationListener.onInstalled(runtime);
+                            configuredMessage = "\n\nEste Java foi definido automaticamente no perfil da modpack.";
+                        } catch (Exception configError) {
+                            JOptionPane.showMessageDialog(JavaRuntimeManagerDialog.this,
+                                "O Java foi instalado, mas não foi possível defini-lo no perfil:\n"
+                                    + configError.getMessage(),
+                                "Java instalado", JOptionPane.WARNING_MESSAGE);
+                        }
+                    }
                     JOptionPane.showMessageDialog(JavaRuntimeManagerDialog.this,
-                        "Java instalado com sucesso:\n" + runtime.javaExecutable,
+                        "Java instalado com sucesso:\n" + runtime.javaExecutable + configuredMessage,
                         "Instalação concluída", JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception ex) {
                     installProgress.setValue(0);

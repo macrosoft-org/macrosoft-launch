@@ -46,7 +46,10 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
@@ -77,6 +80,11 @@ public class MinecraftGameRunner
 extends AbstractGameRunner
 implements GameProcessRunnable {
     private static final String CRASH_IDENTIFIER_MAGIC = "#@!@#";
+    private static final String CLOUDSCRIPT_HEALTHCHECK_MACRO =
+        "$${run(macrosoft_healthcheck)}$$";
+    private static final String CLOUDSCRIPT_HEALTHCHECK_OK =
+        "[MacrosoftHealth] CLOUDSCRIPT_OK";
+    private static final long CLOUDSCRIPT_HEALTHCHECK_TIMEOUT_MS = 45_000L;
     private final Gson gson = new Gson();
     private final DateTypeAdapter dateAdapter = new DateTypeAdapter();
     private final Launcher minecraftLauncher;
@@ -87,12 +95,19 @@ implements GameProcessRunnable {
     private LauncherVisibilityRule visibilityRule = LauncherVisibilityRule.CLOSE_LAUNCHER;
     private UserAuthentication auth;
     private Profile selectedProfile;
+    private final GameLaunchDispatcher.JavaProblemListener javaProblemListener;
+    private volatile String detectedJavaProblem;
+    private volatile boolean cloudScriptHealthCheckPassed;
+    private volatile boolean cloudScriptHealthCheckFailed;
+    private Timer cloudScriptHealthCheckTimer;
     /** Timestamp (ms) do momento em que o processo do jogo foi iniciado — usado para localizar crash reports. */
     private long gameStartTime = 0;
 
-    public MinecraftGameRunner(Launcher minecraftLauncher, String[] additionalLaunchArgs) {
+    public MinecraftGameRunner(Launcher minecraftLauncher, String[] additionalLaunchArgs,
+                               GameLaunchDispatcher.JavaProblemListener javaProblemListener) {
         this.minecraftLauncher = minecraftLauncher;
         this.additionalLaunchArgs = additionalLaunchArgs;
+        this.javaProblemListener = javaProblemListener;
     }
 
     /*
@@ -175,6 +190,7 @@ implements GameProcessRunnable {
         if (!(serverResourcePacksDir = new File(gameDirectory, "server-resource-packs")).exists()) {
             serverResourcePacksDir.mkdirs();
         }
+        installCloudScriptHealthCheckTrigger(gameDirectory);
         // Normalizar separadores de caminho (perfis criados no Windows podem ter '\')
         String rawJavaPath = Objects.firstNonNull(
                 this.selectedProfile.getJavaPath(),
@@ -200,9 +216,16 @@ implements GameProcessRunnable {
         processBuilder.directory(gameDirectory);
         // Cria a aba "Jogo" e registra o logProcessor para receber as linhas do stdout
         final GameOutputLogProcessor logProcessor = ((net.minecraft.launcher.MinecraftUserInterface) this.getLauncher().getUserInterface()).showGameOutputTab(this);
-        if (logProcessor != null) {
-            processBuilder.withLogProcessor(logProcessor);
-        }
+        processBuilder.withLogProcessor(new GameOutputLogProcessor() {
+            @Override
+            public void onGameOutput(GameProcess process, String logLine) {
+                detectJavaProblem(logLine);
+                detectCloudScriptHealthCheck(logLine);
+                if (logProcessor != null) {
+                    logProcessor.onGameOutput(process, logLine);
+                }
+            }
+        });
         String profileArgs = this.selectedProfile.getJavaArgs();
         if (profileArgs != null) {
             processBuilder.withArguments(profileArgs.split(" "));
@@ -234,6 +257,11 @@ implements GameProcessRunnable {
         catch (IOException e) {
             LOGGER.error("Couldn't launch game", (Throwable)e);
             this.setStatus(GameInstanceStatus.IDLE);
+            if (this.javaProblemListener != null) {
+                String detail = "Não foi possível executar o Java configurado:\n"
+                    + javaExecutable + "\n\n" + e.getMessage();
+                this.javaProblemListener.onJavaProblemDetected(detail);
+            }
             return;
         }
         this.minecraftLauncher.performCleanupsAsync();
@@ -461,6 +489,7 @@ implements GameProcessRunnable {
      */
     @Override
     public void onGameProcessEnded(final GameProcess process) {
+        cancelCloudScriptHealthCheckTimeout();
         final int exitCode = process.getExitCode();
         if (exitCode == 0) {
             MinecraftGameRunner.LOGGER.info("Game ended with no troubles detected (exit code " + exitCode + ")");
@@ -501,6 +530,143 @@ implements GameProcessRunnable {
             }
         }
         this.setStatus(GameInstanceStatus.IDLE);
+        if ((exitCode != 0 || this.cloudScriptHealthCheckFailed)
+                && this.detectedJavaProblem != null && this.javaProblemListener != null) {
+            this.javaProblemListener.onJavaProblemDetected(this.detectedJavaProblem);
+        }
+    }
+
+    private void detectJavaProblem(String line) {
+        if (line == null || this.detectedJavaProblem != null) {
+            return;
+        }
+        String normalized = line.toLowerCase(Locale.ROOT);
+        if (normalized.contains("unrecognized vm option")
+                || normalized.contains("could not create the java virtual machine")
+                || normalized.contains("unsupportedclassversionerror")
+                || normalized.contains("unsupported major.minor version")
+                || normalized.contains("compiled by a more recent version of the java runtime")
+                || normalized.contains("only recognizes class file versions up to")
+                || normalized.contains("a jni error has occurred")
+                || normalized.contains("inaccessibleobjectexception")
+                || normalized.contains("unable to locate a java runtime")
+                || normalized.contains("no java runtime present")
+                || normalized.contains("could not find java.dll")
+                || normalized.contains("failed to load jvm dll")) {
+            this.detectedJavaProblem = line.trim();
+        }
+    }
+
+    private void detectCloudScriptHealthCheck(String line) {
+        if (line == null || this.cloudScriptHealthCheckPassed
+                || this.cloudScriptHealthCheckFailed) {
+            return;
+        }
+        String normalized = line.toLowerCase(Locale.ROOT);
+        if (normalized.contains("[cloudscript] requesting macro: macrosoft_healthcheck")) {
+            scheduleCloudScriptHealthCheckTimeout();
+            return;
+        }
+        if (normalized.contains("macro response for macrosoft_healthcheck: ok=false")
+                || normalized.contains("macro start result for macrosoft_healthcheck: false")
+                || normalized.contains("ignoring run(macrosoft_healthcheck)")) {
+            failCloudScriptHealthCheck("O teste do CloudScript falhou: " + line.trim());
+            return;
+        }
+        if (!line.contains(CLOUDSCRIPT_HEALTHCHECK_OK)) {
+            return;
+        }
+        this.cloudScriptHealthCheckPassed = true;
+        cancelCloudScriptHealthCheckTimeout();
+        LOGGER.info("CloudScript compatibility check passed for Java: "
+            + (this.selectedProfile == null ? "unknown" : this.selectedProfile.getJavaPath()));
+    }
+
+    private synchronized void scheduleCloudScriptHealthCheckTimeout() {
+        if (this.cloudScriptHealthCheckTimer != null
+                || this.cloudScriptHealthCheckPassed
+                || this.cloudScriptHealthCheckFailed) {
+            return;
+        }
+        this.cloudScriptHealthCheckTimer = new Timer("cloudscript-healthcheck", true);
+        this.cloudScriptHealthCheckTimer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                failCloudScriptHealthCheck(
+                    "O CloudScript iniciou a macro de teste, mas não produziu "
+                    + CLOUDSCRIPT_HEALTHCHECK_OK + " em 45 segundos.");
+            }
+        }, CLOUDSCRIPT_HEALTHCHECK_TIMEOUT_MS);
+    }
+
+    private synchronized void cancelCloudScriptHealthCheckTimeout() {
+        if (this.cloudScriptHealthCheckTimer != null) {
+            this.cloudScriptHealthCheckTimer.cancel();
+            this.cloudScriptHealthCheckTimer = null;
+        }
+    }
+
+    private void failCloudScriptHealthCheck(String detail) {
+        synchronized (this) {
+            if (this.cloudScriptHealthCheckPassed || this.cloudScriptHealthCheckFailed) {
+                return;
+            }
+            this.cloudScriptHealthCheckFailed = true;
+            this.detectedJavaProblem = detail;
+            cancelCloudScriptHealthCheckTimeout();
+        }
+        LOGGER.warn(detail);
+        GameProcess process = this.currentProcess;
+        if (process != null && process.isRunning()) {
+            process.stop();
+        }
+    }
+
+    /**
+     * Anexa o health check ao evento nativo onJoinGame do Macro/Keybind. O
+     * CloudScript preserva bindings que já contêm $${event}$$, portanto ambos
+     * continuam sendo executados. A escrita é idempotente.
+     */
+    private void installCloudScriptHealthCheckTrigger(File gameDirectory) {
+        File macrosFile = new File(gameDirectory,
+            "liteconfig/common/macros/.macros.txt");
+        if (!macrosFile.isFile()) {
+            LOGGER.warn("CloudScript health check was not installed: "
+                + macrosFile + " does not exist");
+            return;
+        }
+        try {
+            String contents = FileUtils.readFileToString(macrosFile, Charsets.UTF_8);
+            String lineSeparator = contents.contains("\r\n") ? "\r\n" : "\n";
+            String bindingPrefix = "Macro[1000].Macro=";
+            int bindingStart = contents.indexOf(bindingPrefix);
+            if (bindingStart < 0) {
+                String suffix = contents.endsWith("\n") || contents.endsWith("\r")
+                    ? "" : lineSeparator;
+                contents = contents + suffix + bindingPrefix
+                    + "$${event}$$|" + CLOUDSCRIPT_HEALTHCHECK_MACRO
+                    + lineSeparator;
+            } else {
+                int valueStart = bindingStart + bindingPrefix.length();
+                int lineEnd = contents.indexOf('\n', valueStart);
+                if (lineEnd < 0) lineEnd = contents.length();
+                int valueEnd = lineEnd;
+                if (valueEnd > valueStart && contents.charAt(valueEnd - 1) == '\r') {
+                    valueEnd--;
+                }
+                String binding = contents.substring(valueStart, valueEnd);
+                if (binding.contains(CLOUDSCRIPT_HEALTHCHECK_MACRO)) {
+                    return;
+                }
+                String separator = binding.trim().isEmpty() ? "" : "|";
+                contents = contents.substring(0, valueEnd) + separator
+                    + CLOUDSCRIPT_HEALTHCHECK_MACRO + contents.substring(valueEnd);
+            }
+            FileUtils.writeStringToFile(macrosFile, contents, Charsets.UTF_8);
+            LOGGER.info("CloudScript health check attached to onJoinGame");
+        } catch (IOException e) {
+            LOGGER.warn("Could not install CloudScript health check trigger", e);
+        }
     }
 
     /**
@@ -546,4 +712,3 @@ implements GameProcessRunnable {
     }
 
 }
-

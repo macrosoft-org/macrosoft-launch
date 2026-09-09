@@ -35,6 +35,7 @@ import javax.swing.event.DocumentListener;
 import javax.swing.text.Document;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.Files;
 import java.util.List;
 import net.minecraft.launcher.profile.Profile;
 import net.minecraft.launcher.ui.popups.profile.ProfileEditorPopup;
@@ -113,7 +114,7 @@ extends JPanel {
         String javaPath = this.editor.getProfile().getJavaPath();
         // Garante que javaPath é diferente de null, e que aponta para um java válido
         // Caso contrário, usa o java do sistema (que foi bem sucedido em abrir o launcher, então deve funcionar)
-        if (javaPath != null && new File(javaPath).isFile()) {
+        if (javaPath != null && isValidJavaPath(javaPath)) {
             this.javaPathCustom.setSelected(true);
             this.javaPathField.setText(javaPath);
         } else {
@@ -130,6 +131,20 @@ extends JPanel {
             this.javaArgsField.setText("-Xmx1G -XX:+UseConcMarkSweepGC -XX:+CMSIncrementalMode -XX:-UseAdaptiveSizePolicy -Xmn128M");
         }
         this.updateJavaArgsState();
+    }
+
+    private boolean isValidJavaPath(String javaPath) {
+        try {
+            Path path = Paths.get(javaPath);
+            if (!path.isAbsolute() && javaPath.replace('\\', '/').startsWith(".macrosoft/")) {
+                java.io.File workDir = editor.getMinecraftLauncher().getLauncher().getWorkingDirectory();
+                Path launcherBase = workDir.toPath().toAbsolutePath().normalize().getParent().getParent();
+                path = launcherBase.resolve(path).normalize();
+            }
+            return Files.isRegularFile(path);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     protected void addEventHandlers() {

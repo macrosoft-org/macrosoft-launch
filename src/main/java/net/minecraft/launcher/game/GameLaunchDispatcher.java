@@ -30,15 +30,24 @@ import net.minecraft.launcher.profile.ProfileManager;
 
 public class GameLaunchDispatcher
 implements GameRunnerListener {
+    public interface JavaProblemListener {
+        void onJavaProblemDetected(String outputLine);
+    }
+
     private final Launcher launcher;
     private final String[] additionalLaunchArgs;
     private final ReentrantLock lock = new ReentrantLock();
     private final BiMap<UserAuthentication, MinecraftGameRunner> instances = HashBiMap.create();
     private boolean downloadInProgress = false;
+    private volatile JavaProblemListener javaProblemListener;
 
     public GameLaunchDispatcher(Launcher launcher, String[] additionalLaunchArgs) {
         this.launcher = launcher;
         this.additionalLaunchArgs = additionalLaunchArgs;
+    }
+
+    public void setJavaProblemListener(JavaProblemListener listener) {
+        this.javaProblemListener = listener;
     }
 
     /*
@@ -103,7 +112,8 @@ implements GameRunnerListener {
         final Profile profile = profileManager.getSelectedProfile();
         final UserAuthentication user = (profileManager.getSelectedUser() == null) ? null : profileManager.getAuthDatabase().getByUUID(profileManager.getSelectedUser());
         final String lastVersionId = profile.getLastVersionId();
-        final MinecraftGameRunner gameRunner = new MinecraftGameRunner(this.launcher, this.additionalLaunchArgs);
+        final MinecraftGameRunner gameRunner = new MinecraftGameRunner(
+                this.launcher, this.additionalLaunchArgs, this.javaProblemListener);
         gameRunner.setStatus(GameInstanceStatus.PREPARING);
         this.lock.lock();
         try {
@@ -219,4 +229,3 @@ implements GameRunnerListener {
     }
 
 }
-

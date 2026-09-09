@@ -1,6 +1,8 @@
 # 🟣 Macrosoft Launcher
 
 > Launcher de Minecraft customizado com foco em **segurança**, **privacidade** e suporte a **modpacks gerenciados**.
+>
+> Versão atual: **v11**
 
 ---
 
@@ -15,6 +17,7 @@
   - [Permissões de arquivo](#4-permissões-de-arquivo--posix)
   - [HTTPS obrigatório](#5-https-obrigatório-em-todas-as-conexões)
 - [Modpacks](#modpacks)
+- [Gerenciamento de Java](#gerenciamento-de-java)
 - [Build](#build)
 - [Requisitos](#requisitos)
 - [Estrutura do Projeto](#estrutura-do-projeto)
@@ -43,6 +46,8 @@ O **Macrosoft Launcher** é um launcher de Minecraft construído sobre a base of
 | 📋 **Console de logs** | Saída do jogo em tempo real por aba, com histórico |
 | ⬇️ **Downloader com progresso** | Download de modpacks com barra de progresso e cancelamento |
 | ☕ **Java customizável** | Caminho e argumentos JVM configuráveis por perfil |
+| 🔎 **Detecção automática de Java** | Localiza, testa e configura um Java 8 funcional antes de liberar o jogo |
+| 🩹 **Recuperação de inicialização** | Tenta outros Java 8 instalados e oferece o gerenciador quando nenhum funciona |
 | 🖥️ **Multi-plataforma** | Linux, Windows e macOS |
 
 ---
@@ -192,6 +197,47 @@ Saves, configurações e versões de um modpack **nunca interferem** com os dema
 
 ---
 
+## Gerenciamento de Java
+
+Cada modpack possui sua própria configuração de Java. Ao concluir a etapa
+**Preparar**, o launcher executa `java -version` no caminho já salvo e nos runtimes
+mantidos em `.macrosoft/.java`. Caminhos inexistentes, executáveis que não respondem
+e versões incompatíveis são descartados.
+
+A ordem de preferência é:
+
+1. Java válido já configurado no perfil
+2. Runtimes instalados pelo Macrosoft em `.macrosoft/.java/`
+
+A procura automática não examina `PATH`, `JAVA_HOME`, `/opt`, `/usr/lib/jvm`, o
+Registro do Windows ou instalações equivalentes do sistema. O botão **Detectar
+JAVA** mantém a procura completa; quando o usuário escolhe um resultado e salva o
+perfil, esse caminho configurado passa a ser respeitado nas próximas partidas.
+
+O primeiro candidato funcional é salvo automaticamente no perfil. Runtimes
+gerenciados usam um caminho portátil como:
+
+```text
+.macrosoft/.java/jre-8/jre1.8.0_202/bin/java
+```
+
+Se o Minecraft produzir uma mensagem reconhecida de incompatibilidade com Java
+durante a inicialização, o launcher tenta o próximo candidato. Somente depois de
+esgotar a lista ele oferece a tela do botão **Java**, onde o usuário pode baixar um
+runtime isolado. Ao terminar a instalação, o novo caminho é aplicado ao perfil da
+modpack automaticamente; a nova tentativa de jogo permanece sob controle do usuário.
+
+A verificação confirma que o Java 8 é executável e acompanha falhas conhecidas do
+carregamento. Para confirmar o CloudScript no ambiente real, o launcher acrescenta
+`$${run(macrosoft_healthcheck)}$$` ao evento `onJoinGame` do Macro/Keybind. A macro
+é executada automaticamente na entrada no mundo ou servidor, sem simular a tecla
+Home. O launcher reconhece `[MacrosoftHealth] CLOUDSCRIPT_OK` no Game Output e
+registra que o Java atual passou na verificação de compatibilidade. Resposta
+negativa, falha ao iniciar a macro ou ausência do marcador por 45 segundos após o
+pedido encerram a tentativa e fazem o launcher experimentar o próximo Java.
+
+---
+
 ## Build
 
 ### Compilar
@@ -212,7 +258,8 @@ java -jar build/libs/mclaunch-all.jar
 
 | Componente | Versão mínima |
 |---|---|
-| Java (runtime) | 8 (recomendado: 17 ou 21) |
+| Java do launcher | 8 (recomendado: 17 ou 21) |
+| Java das modpacks atuais | 8 (detectado ou instalado pelo launcher) |
 | Java (compilação) | 8+ (`source/target 1.8`) |
 | Sistema Operacional | Linux, Windows 10+, macOS |
 | RAM | 512 MB (launcher) + RAM do modpack |
@@ -250,4 +297,3 @@ Consulte o arquivo [LICENSE](LICENSE) para os termos completos.
 <p align="center">
   <sub>Macrosoft Launcher — Seguro por design, privado por configuração.</sub>
 </p>
-

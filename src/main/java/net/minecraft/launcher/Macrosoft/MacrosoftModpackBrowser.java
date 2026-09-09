@@ -28,8 +28,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import net.minecraft.launcher.utils.JavaLocator;
 
 /**
  * Painel principal do launcher:
@@ -73,6 +76,12 @@ public class MacrosoftModpackBrowser extends JPanel {
         public Launcher configureLauncher = null;
         /** Janela de logs reutilizável; recriada quando playLauncher muda. */
         public JDialog  logDialog         = null;
+        /** Candidatos Java 8 verificados para a tentativa de jogo atual. */
+        public List<String> javaCandidates = new ArrayList<>();
+        public int nextJavaCandidate = 0;
+        public boolean checkingJava = false;
+        public boolean javaChecked = false;
+        public boolean javaCandidatesExhausted = false;
 
         public ModpackEntry(String name, String downloadUrl, String author, String iconUrl) {
             this.name        = name;
@@ -89,6 +98,7 @@ public class MacrosoftModpackBrowser extends JPanel {
         PREPARE,      // launcher não criado → "Preparar"
         PREPARING,    // launcher criando, versões/perfis carregando → "Preparando…"
         READY,        // pronto para jogar → "▶ Jogar"
+        CHECKING_JAVA,// procurando e validando runtimes Java 8 instalados
         DOWNLOADING,  // baixando/instalando arquivos do jogo → "Instalando…"
         PLAYING       // jogo em execução → "⏹ Parar"
     }
@@ -245,10 +255,15 @@ public class MacrosoftModpackBrowser extends JPanel {
     }
 
     private void showJavaManagerDialog() {
+        showJavaManagerDialog(null);
+    }
+
+    private void showJavaManagerDialog(ModpackEntry targetEntry) {
         JavaRuntimeManagerDialog dialog = new JavaRuntimeManagerDialog(
             parentFrame,
             macrosoftBaseDir.toPath(),
-            javaRuntimeOptions
+            javaRuntimeOptions,
+            targetEntry == null ? null : runtime -> configureInstalledJava(targetEntry, runtime)
         );
         dialog.setVisible(true);
     }
@@ -635,14 +650,20 @@ public class MacrosoftModpackBrowser extends JPanel {
                 prepareEntry(entry, actionBtn);
                 break;
             case READY:
-                // Launcher pronto → lançar jogo
-                entry.playLauncher.getLaunchDispatcher().play();
+                if (!entry.javaChecked) {
+                    findJavaCandidates(entry, true);
+                } else if (entry.javaCandidatesExhausted || entry.javaCandidates.isEmpty()) {
+                    showJavaProblemHelp(entry,
+                        "Nenhum Java 8 instalado e funcional conseguiu iniciar a modpack.");
+                } else {
+                    entry.playLauncher.getLaunchDispatcher().play();
+                }
                 break;
             case PLAYING:
                 entry.playLauncher.getLaunchDispatcher().stopAll();
                 break;
             default:
-                // PREPARING / DOWNLOADING → botão desabilitado, nunca chega aqui
+                // Estados de espera → botão desabilitado, nunca chega aqui
                 break;
         }
     }
@@ -665,7 +686,186 @@ public class MacrosoftModpackBrowser extends JPanel {
         // Reseta janela de logs para o novo launcher
         if (entry.logDialog != null) { entry.logDialog.dispose(); entry.logDialog = null; }
         // Cria launcher com autoPlay=false; o poller detecta quando fica READY
+        entry.javaCandidates = new ArrayList<>();
+        entry.nextJavaCandidate = 0;
+        entry.javaChecked = false;
+        entry.javaCandidatesExhausted = false;
         entry.playLauncher = Main.launchModpack(entry.name, playerName, false, parentFrame, launcherArgs);
+        entry.playLauncher.getLaunchDispatcher().setJavaProblemListener(
+            outputLine -> SwingUtilities.invokeLater(() -> tryNextJavaOrShowHelp(entry, outputLine)));
+    }
+
+    private void findJavaCandidates(ModpackEntry entry, boolean playAfterCheck) {
+        if (entry.playLauncher == null || entry.checkingJava) return;
+        final Launcher checkedLauncher = entry.playLauncher;
+        entry.checkingJava = true;
+        updateCardStates();
+
+        new SwingWorker<List<String>, Void>() {
+            @Override
+            protected List<String> doInBackground() {
+                List<String> detected = JavaLocator.findMacrosoftManagedJava8Installations(
+                    macrosoftBaseDir.toPath());
+                return orderJavaCandidates(checkedLauncher, detected);
+            }
+
+            @Override
+            protected void done() {
+                entry.checkingJava = false;
+                if (entry.playLauncher != checkedLauncher) {
+                    return;
+                }
+                try {
+                    entry.javaCandidates = get();
+                } catch (Exception e) {
+                    entry.javaCandidates = new ArrayList<>();
+                    System.err.println("[Browser] Falha ao detectar Java: " + e.getMessage());
+                }
+                entry.nextJavaCandidate = 0;
+                entry.javaChecked = true;
+                boolean configured = configureNextJavaCandidate(entry);
+                if (configured && playAfterCheck) {
+                    entry.playLauncher.getLaunchDispatcher().play();
+                } else if (!configured && playAfterCheck) {
+                    showJavaProblemHelp(entry,
+                        "Nenhum Java 8 instalado e funcional conseguiu iniciar a modpack.");
+                }
+                updateCardStates();
+            }
+        }.execute();
+    }
+
+    private List<String> orderJavaCandidates(Launcher launcher, List<String> detected) {
+        Set<String> ordered = new LinkedHashSet<>();
+        Profile profile = launcher.getProfileManager().getSelectedProfile();
+        if (profile != null) {
+            String configured = resolveConfiguredJavaPath(profile.getJavaPath());
+            if (configured != null && JavaLocator.isFunctionalJava8(configured)) {
+                ordered.add(javaPath(configured).toString());
+            }
+        }
+
+        Path managedDir = JavaRuntimeManager.javaBaseDir(macrosoftBaseDir.toPath())
+            .toAbsolutePath().normalize();
+        for (String candidate : detected) {
+            if (javaPath(candidate).startsWith(managedDir)) ordered.add(javaPath(candidate).toString());
+        }
+        for (String candidate : detected) ordered.add(javaPath(candidate).toString());
+        return new ArrayList<>(ordered);
+    }
+
+    private String resolveConfiguredJavaPath(String configured) {
+        if (configured == null || configured.trim().isEmpty()) return null;
+        try {
+            Path path = java.nio.file.Paths.get(configured.replace('\\', File.separatorChar));
+            if (!path.isAbsolute() && configured.replace('\\', '/').startsWith(".macrosoft/")) {
+                Path launcherBase = macrosoftBaseDir.toPath().toAbsolutePath().normalize().getParent();
+                path = launcherBase.resolve(path);
+            }
+            return path.toAbsolutePath().normalize().toString();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static Path javaPath(String path) {
+        return java.nio.file.Paths.get(path).toAbsolutePath().normalize();
+    }
+
+    private void tryNextJavaOrShowHelp(ModpackEntry entry, String lastProblem) {
+        if (configureNextJavaCandidate(entry)) {
+            entry.playLauncher.getLaunchDispatcher().play();
+            return;
+        }
+        entry.javaCandidatesExhausted = true;
+        showJavaProblemHelp(entry, lastProblem);
+    }
+
+    private boolean configureNextJavaCandidate(ModpackEntry entry) {
+        while (entry.nextJavaCandidate < entry.javaCandidates.size()) {
+            String candidate = entry.javaCandidates.get(entry.nextJavaCandidate++);
+            try {
+                configureJavaPath(entry, javaPath(candidate));
+                entry.javaCandidatesExhausted = false;
+                return true;
+            } catch (Exception e) {
+                System.err.println("[Browser] Falha ao configurar Java " + candidate + ": " + e.getMessage());
+            }
+        }
+        entry.javaCandidatesExhausted = true;
+        return false;
+    }
+
+    private void showJavaProblemHelp(ModpackEntry entry, String outputLine) {
+        if (entry.playLauncher == null) return;
+
+        String detail = outputLine == null || outputLine.trim().isEmpty()
+            ? "O launcher detectou uma falha relacionada ao Java."
+            : "O launcher detectou uma falha relacionada ao Java:\n\n" + abbreviate(outputLine.trim(), 400);
+        String messageText = detail
+            + "\n\nEscolha e instale uma versão do Java no gerenciador. "
+            + "Depois, tente jogar novamente.\n\nAbrir o gerenciador de Java agora?";
+        JLabel message = new JLabel("<html><div style='width: 430px;'>"
+            + escapeHtml(messageText).replace("\n", "<br>") + "</div></html>");
+        message.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        int answer = JOptionPane.showConfirmDialog(parentFrame,
+            message,
+            "Problema com o Java", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (answer == JOptionPane.YES_OPTION) {
+            showJavaManagerDialog(entry);
+        }
+    }
+
+    private static String abbreviate(String text, int maxLength) {
+        return text.length() <= maxLength ? text : text.substring(0, maxLength - 3) + "...";
+    }
+
+    private static String escapeHtml(String text) {
+        return text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;");
+    }
+
+    private void configureInstalledJava(ModpackEntry entry,
+                                        JavaRuntimeManager.InstalledRuntime runtime) throws IOException {
+        configureJavaPath(entry, runtime.javaExecutable);
+        entry.javaCandidates = new ArrayList<>();
+        entry.javaCandidates.add(runtime.javaExecutable.toAbsolutePath().normalize().toString());
+        entry.nextJavaCandidate = 1;
+        entry.javaChecked = true;
+        entry.javaCandidatesExhausted = false;
+    }
+
+    private void configureJavaPath(ModpackEntry entry, Path javaExecutable) throws IOException {
+        Path executable = javaExecutable.toAbsolutePath().normalize();
+        Path managedJavaDir = JavaRuntimeManager.javaBaseDir(macrosoftBaseDir.toPath())
+            .toAbsolutePath().normalize();
+        String profileJavaPath;
+        if (executable.startsWith(managedJavaDir)) {
+            Path relativeInsideMacrosoft = macrosoftBaseDir.toPath().toAbsolutePath().normalize()
+                .relativize(executable);
+            profileJavaPath = ".macrosoft/"
+                + relativeInsideMacrosoft.toString().replace('\\', '/');
+        } else {
+            profileJavaPath = executable.toString();
+        }
+
+        Profile profile = entry.playLauncher.getProfileManager().getSelectedProfile();
+        if (profile == null) {
+            throw new IOException("O perfil da modpack não está disponível.");
+        }
+        profile.setJavaDir(profileJavaPath);
+        entry.playLauncher.getProfileManager().saveProfiles();
+        entry.playLauncher.getProfileManager().fireRefreshEvent();
+
+        // Se o editor desta mesma modpack já tiver sido preparado, mantenha seu
+        // modelo em memória coerente para ele não sobrescrever o valor salvo depois.
+        if (entry.configureLauncher != null) {
+            Profile configureProfile = entry.configureLauncher.getProfileManager().getSelectedProfile();
+            if (configureProfile != null) {
+                configureProfile.setJavaDir(profileJavaPath);
+            }
+        }
     }
 
     private void configureModpack(ModpackEntry entry) {
@@ -811,10 +1011,17 @@ public class MacrosoftModpackBrowser extends JPanel {
         boolean isAnyPlaying = false;
         for (CardUi cu : cardUiList) {
             ActionState state = getActionState(cu.entry);
+            // Assim que o preparo do launcher termina, valida e corrige o Java
+            // antes de liberar o botão Jogar.
+            if (state == ActionState.READY && !cu.entry.javaChecked && !cu.entry.checkingJava) {
+                findJavaCandidates(cu.entry, false);
+                state = getActionState(cu.entry);
+            }
             applyButtonState(cu.actionBtn, state);
             boolean hasLauncher = cu.entry.playLauncher != null;
             if (cu.configBtn != null)
-                cu.configBtn.setEnabled(state != ActionState.PLAYING && state != ActionState.DOWNLOADING);
+                cu.configBtn.setEnabled(state != ActionState.PLAYING
+                    && state != ActionState.DOWNLOADING && state != ActionState.CHECKING_JAVA);
             // Botão de logs aparece assim que o launcher for criado
             if (cu.logsBtn != null)
                 cu.logsBtn.setVisible(hasLauncher);
@@ -842,6 +1049,7 @@ public class MacrosoftModpackBrowser extends JPanel {
      */
     private ActionState getActionState(ModpackEntry entry) {
         if (entry.playLauncher == null) return ActionState.PREPARE;
+        if (entry.checkingJava) return ActionState.CHECKING_JAVA;
         GameLaunchDispatcher.PlayStatus s = entry.playLauncher.getLaunchDispatcher().getStatus();
         switch (s) {
             case ALREADY_PLAYING: return ActionState.PLAYING;
@@ -870,6 +1078,11 @@ public class MacrosoftModpackBrowser extends JPanel {
                 btn.setText("▶  Jogar");
                 btn.setBackground(BTN_PLAY);
                 btn.setEnabled(true);
+                break;
+            case CHECKING_JAVA:
+                btn.setText("Verificando Java…");
+                btn.setBackground(BTN_DISABLED);
+                btn.setEnabled(false);
                 break;
             case DOWNLOADING:
                 btn.setText("Instalando…");
@@ -1131,6 +1344,11 @@ public class MacrosoftModpackBrowser extends JPanel {
         }
         // PREPARING / READY / PLAYING (após parar) / DOWNLOADING (após confirmar): descarta o launcher
         entry.playLauncher = null;
+        entry.javaCandidates = new ArrayList<>();
+        entry.nextJavaCandidate = 0;
+        entry.checkingJava = false;
+        entry.javaChecked = false;
+        entry.javaCandidatesExhausted = false;
         if (entry.logDialog != null) {
             entry.logDialog.dispose();
             entry.logDialog = null;

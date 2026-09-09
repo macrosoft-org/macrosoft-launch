@@ -1,5 +1,25 @@
 # Macrosoft Launcher — Changelog de Performance e Estabilidade
 
+> **v11** — Gerenciamento assistido de Java: detecção e configuração automáticas, recuperação de falhas de inicialização e integração com o instalador isolado do launcher.
+
+## Novidades da v11
+
+- Valida automaticamente o Java 8 configurado e os runtimes instalados em
+  `.macrosoft/.java` ao terminar **Preparar**.
+- Reserva a procura de Java no sistema para a ação explícita **Detectar JAVA**.
+- Substitui caminhos inválidos pelo primeiro runtime funcional encontrado.
+- Prioriza o Java do perfil e os runtimes mantidos em `.macrosoft/.java/`.
+- Tenta o próximo candidato quando o output indica incompatibilidade de Java.
+- Abre o gerenciador de Java somente depois que todos os candidatos falham.
+- Configura e salva automaticamente no perfil o runtime instalado pelo gerenciador.
+- Mantém a nova tentativa de jogo como uma ação do usuário.
+- Executa `macrosoft_healthcheck` automaticamente no evento `onJoinGame` e
+  reconhece seu resultado no Game Output.
+- Avança para o próximo Java quando a macro responde com falha, não inicia ou não
+  produz o marcador de sucesso dentro de 45 segundos.
+
+---
+
 > **v10** — Correção de regressão de performance v8→v9, implementação de ocultação do launcher durante o gameplay e restauração dos logs do Minecraft em tempo real.
 
 ---
@@ -207,4 +227,3 @@ reader.start();
 | `net/minecraft/launcher/Launcher.java` | `performCleanupsAsync()` com delay de 60s |
 | `net/minecraft/launcher/ui/tabs/GameOutputTab.java` | Batching via `ConcurrentLinkedQueue` + `Timer` |
 | `net/minecraft/launcher/Macrosoft/MacrosoftModpackBrowser.java` | Hide/show do `parentFrame`, abertura automática de logs, `JDialog` sem dono |
-

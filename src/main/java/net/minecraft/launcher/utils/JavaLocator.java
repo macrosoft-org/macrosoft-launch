@@ -83,18 +83,45 @@ public class JavaLocator {
         List<String> validExecutables = new ArrayList<>();
         for (String homePath : javaHomes) {
             String executablePath = getExecutableFromJavaHome(homePath, os);
-            if (executablePath != null && Files.exists(Paths.get(executablePath)) && isJava8(executablePath)) {
+            if (executablePath != null && Files.exists(Paths.get(executablePath)) && isFunctionalJava8(executablePath)) {
                 validExecutables.add(executablePath);
             }
         }
-        // Javas do Macrosoft: aceitar qualquer versão, apenas exigir que o executável exista e seja executável
+        // Javas do Macrosoft também precisam responder e ser Java 8. Isso impede
+        // selecionar automaticamente uma instalação incompleta ou incompatível.
         for (String homePath : macrosoftManagedHomes) {
             String executablePath = getExecutableFromJavaHome(homePath, os);
-            if (executablePath != null && Files.exists(Paths.get(executablePath))) {
+            if (executablePath != null && Files.exists(Paths.get(executablePath))
+                    && isFunctionalJava8(executablePath)) {
                 validExecutables.add(executablePath);
             }
         }
         // Remover duplicatas que possam ter surgido de caminhos diferentes para o mesmo executável
+        return validExecutables.stream().distinct().collect(Collectors.toList());
+    }
+
+    /**
+     * Procura somente runtimes instalados pelo gerenciador do Macrosoft.
+     * Usado pelo fluxo automático para não selecionar silenciosamente um Java
+     * existente em PATH, /opt, /usr/lib/jvm ou outros locais do sistema.
+     */
+    public static List<String> findMacrosoftManagedJava8Installations(Path macrosoftBaseDir) {
+        if (macrosoftBaseDir == null) {
+            return new ArrayList<>();
+        }
+        Set<String> managedHomes = new LinkedHashSet<>();
+        discoverMacrosoftManagedJavasFromDir(
+            macrosoftBaseDir.resolve(".java"), managedHomes);
+
+        OperatingSystem os = OperatingSystem.getCurrentPlatform();
+        List<String> validExecutables = new ArrayList<>();
+        for (String homePath : managedHomes) {
+            String executablePath = getExecutableFromJavaHome(homePath, os);
+            if (executablePath != null && Files.exists(Paths.get(executablePath))
+                    && isFunctionalJava8(executablePath)) {
+                validExecutables.add(executablePath);
+            }
+        }
         return validExecutables.stream().distinct().collect(Collectors.toList());
     }
 
@@ -319,33 +346,36 @@ public class JavaLocator {
     }
 
 
-    private static boolean isJava8(String executablePath) {
+    public static boolean isFunctionalJava8(String executablePath) {
         if (executablePath == null || executablePath.isEmpty()) {
             return false;
         }
         try {
+            Path executable = Paths.get(executablePath);
+            if (!Files.isRegularFile(executable) || !Files.isExecutable(executable)) {
+                return false;
+            }
             ProcessBuilder builder = new ProcessBuilder(executablePath, "-version");
             // "-version" frequentemente imprime para stderr
             builder.redirectErrorStream(true);
             Process process = builder.start();
 
-            StringBuilder output = new StringBuilder();
-            // Usar try-with-resources para garantir que o reader seja fechado
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append(System.lineSeparator());
-                }
-            }
-
-            // Aguardar o processo terminar, com um timeout para evitar bloqueio indefinido
+            // Esperar antes de ler impede que um executável travado mantenha readLine()
+            // bloqueado indefinidamente. `java -version` produz apenas poucas linhas.
             if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                process.destroyForcibly(); // Destruir se demorar muito
+                process.destroyForcibly();
                 System.err.println("Comando '-version' para " + executablePath + " demorou demais.");
                 return false;
             }
 
             if (process.exitValue() == 0) {
+                StringBuilder output = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        output.append(line).append(System.lineSeparator());
+                    }
+                }
                 String versionOutput = output.toString();
                 //System.out.println("Saída de " + executablePath + " -version:\n" + versionOutput);
                 Matcher matcher = JAVA_8_VERSION_PATTERN.matcher(versionOutput);
