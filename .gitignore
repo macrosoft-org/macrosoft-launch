@@ -12,3 +12,4 @@ gradlew*
 gradle-app.setting
 .gradletasknamecache
 gradle/wrapper/gradle-wrapper.properties
+evidence/*
