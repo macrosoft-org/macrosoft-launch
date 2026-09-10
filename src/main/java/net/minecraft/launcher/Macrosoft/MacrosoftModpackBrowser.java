@@ -704,7 +704,7 @@ public class MacrosoftModpackBrowser extends JPanel {
         new SwingWorker<List<String>, Void>() {
             @Override
             protected List<String> doInBackground() {
-                List<String> detected = JavaLocator.findMacrosoftManagedJava8Installations(
+                List<String> detected = JavaLocator.findJava8Installations(
                     macrosoftBaseDir.toPath());
                 return orderJavaCandidates(checkedLauncher, detected);
             }

@@ -200,19 +200,19 @@ Saves, configurações e versões de um modpack **nunca interferem** com os dema
 ## Gerenciamento de Java
 
 Cada modpack possui sua própria configuração de Java. Ao concluir a etapa
-**Preparar**, o launcher executa `java -version` no caminho já salvo e nos runtimes
-mantidos em `.macrosoft/.java`. Caminhos inexistentes, executáveis que não respondem
-e versões incompatíveis são descartados.
+**Preparar**, o launcher procura instalações de Java 8 e executa `java -version` em
+cada candidato. Caminhos inexistentes, executáveis que não respondem e versões
+incompatíveis são descartados.
 
 A ordem de preferência é:
 
 1. Java válido já configurado no perfil
 2. Runtimes instalados pelo Macrosoft em `.macrosoft/.java/`
+3. Outras instalações de Java 8 encontradas no sistema
 
-A procura automática não examina `PATH`, `JAVA_HOME`, `/opt`, `/usr/lib/jvm`, o
-Registro do Windows ou instalações equivalentes do sistema. O botão **Detectar
-JAVA** mantém a procura completa; quando o usuário escolhe um resultado e salva o
-perfil, esse caminho configurado passa a ser respeitado nas próximas partidas.
+A procura inclui `PATH`, variáveis como `JAVA_HOME`, locais conhecidos do Linux e
+macOS e o Registro do Windows. O botão **Detectar JAVA** continua disponível para
+seleção manual.
 
 O primeiro candidato funcional é salvo automaticamente no perfil. Runtimes
 gerenciados usam um caminho portátil como:

@@ -4,11 +4,10 @@
 
 ## Novidades da v11
 
-- Valida automaticamente o Java 8 configurado e os runtimes instalados em
-  `.macrosoft/.java` ao terminar **Preparar**.
-- Reserva a procura de Java no sistema para a ação explícita **Detectar JAVA**.
+- Valida automaticamente os Java 8 instalados ao terminar **Preparar**.
 - Substitui caminhos inválidos pelo primeiro runtime funcional encontrado.
-- Prioriza o Java do perfil e os runtimes mantidos em `.macrosoft/.java/`.
+- Prioriza o Java do perfil e os runtimes mantidos em `.macrosoft/.java/`,
+  seguidos pelos Java 8 encontrados no sistema.
 - Tenta o próximo candidato quando o output indica incompatibilidade de Java.
 - Abre o gerenciador de Java somente depois que todos os candidatos falham.
 - Configura e salva automaticamente no perfil o runtime instalado pelo gerenciador.

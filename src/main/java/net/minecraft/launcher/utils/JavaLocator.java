@@ -100,31 +100,6 @@ public class JavaLocator {
         return validExecutables.stream().distinct().collect(Collectors.toList());
     }
 
-    /**
-     * Procura somente runtimes instalados pelo gerenciador do Macrosoft.
-     * Usado pelo fluxo automático para não selecionar silenciosamente um Java
-     * existente em PATH, /opt, /usr/lib/jvm ou outros locais do sistema.
-     */
-    public static List<String> findMacrosoftManagedJava8Installations(Path macrosoftBaseDir) {
-        if (macrosoftBaseDir == null) {
-            return new ArrayList<>();
-        }
-        Set<String> managedHomes = new LinkedHashSet<>();
-        discoverMacrosoftManagedJavasFromDir(
-            macrosoftBaseDir.resolve(".java"), managedHomes);
-
-        OperatingSystem os = OperatingSystem.getCurrentPlatform();
-        List<String> validExecutables = new ArrayList<>();
-        for (String homePath : managedHomes) {
-            String executablePath = getExecutableFromJavaHome(homePath, os);
-            if (executablePath != null && Files.exists(Paths.get(executablePath))
-                    && isFunctionalJava8(executablePath)) {
-                validExecutables.add(executablePath);
-            }
-        }
-        return validExecutables.stream().distinct().collect(Collectors.toList());
-    }
-
     private static String getExecutableFromJavaHome(String javaHome, OperatingSystem os) {
         if (javaHome == null || javaHome.isEmpty()) {
             return null;
